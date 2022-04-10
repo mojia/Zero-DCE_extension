@@ -12,6 +12,7 @@ import model
 import Myloss
 import numpy as np
 from torchvision import transforms
+from torch.utils.tensorboard import SummaryWriter
 
 
 def weights_init(m):
@@ -23,103 +24,99 @@ def weights_init(m):
         m.bias.data.fill_(0)
 
 
-
+def log_gradients_in_model(model, writer, step):
+    for tag, value in model.named_parameters():
+        if value.grad is not None:
+            writer.add_histogram(tag + "/grad", value.grad.cpu(), step)
 
 
 def train(config):
+    writer = SummaryWriter('./data/board/')
 
-	os.environ['CUDA_VISIBLE_DEVICES']='0'
-	scale_factor = config.scale_factor
-	DCE_net = model.enhance_net_nopool(scale_factor).cuda()
+    os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+    scale_factor = config.scale_factor
+    DCE_net = model.enhance_net_nopool(scale_factor).cpu()
 
-	# DCE_net.apply(weights_init)
-	if config.load_pretrain == True:
-	    DCE_net.load_state_dict(torch.load(config.pretrain_dir))
-	train_dataset = dataloader.lowlight_loader(config.lowlight_images_path)		
-	
-	train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=config.train_batch_size, shuffle=True, num_workers=config.num_workers, pin_memory=True)
+    # DCE_net.apply(weights_init)
+    if config.load_pretrain:
+        DCE_net.load_state_dict(torch.load(config.pretrain_dir, map_location=torch.device('cpu')))
+    train_dataset = dataloader.lowlight_loader(config.lowlight_images_path)
 
+    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=config.train_batch_size, shuffle=True,
+                                               num_workers=config.num_workers, pin_memory=True)
 
+    L_color = Myloss.L_color()
+    L_spa = Myloss.L_spa()
+    L_exp = Myloss.L_exp(16)
+    # L_exp = Myloss.L_exp(16,0.6)
+    L_TV = Myloss.L_TV()
 
-	L_color = Myloss.L_color()
-	L_spa = Myloss.L_spa()
-	L_exp = Myloss.L_exp(16)
-	# L_exp = Myloss.L_exp(16,0.6)
-	L_TV = Myloss.L_TV()
+    optimizer = torch.optim.Adam(DCE_net.parameters(), lr=config.lr, weight_decay=config.weight_decay)
 
+    DCE_net.train()
+    loss_idx_value = 0
+    for epoch in range(config.num_epochs):
+        for iteration, img_lowlight in enumerate(train_loader):
 
-	optimizer = torch.optim.Adam(DCE_net.parameters(), lr=config.lr, weight_decay=config.weight_decay)
-	
-	DCE_net.train()
+            img_lowlight = img_lowlight.cpu()
 
-	for epoch in range(config.num_epochs):
-		for iteration, img_lowlight in enumerate(train_loader):
+            E = 0.6
 
-			img_lowlight = img_lowlight.cuda()
+            enhanced_image, A = DCE_net(img_lowlight)
+            Loss_TV = 1600 * L_TV(A)
+            # Loss_TV = 200*L_TV(A)
+            loss_spa = torch.mean(L_spa(enhanced_image, img_lowlight))
+            loss_col = 5 * torch.mean(L_color(enhanced_image))
 
-			E = 0.6
+            loss_exp = 10 * torch.mean(L_exp(enhanced_image, E))
 
-			enhanced_image,A  = DCE_net(img_lowlight)
-			Loss_TV = 1600*L_TV(A)
-			# Loss_TV = 200*L_TV(A)			
-			loss_spa = torch.mean(L_spa(enhanced_image, img_lowlight))
-			loss_col = 5*torch.mean(L_color(enhanced_image))
+            # best_loss
+            loss = Loss_TV + loss_spa + loss_col + loss_exp
+            writer.add_scalar('loss/Loss_TV', Loss_TV.item(), loss_idx_value)
+            writer.add_scalar('loss/loss_spa', loss_spa.item(), loss_idx_value)
+            writer.add_scalar('loss/loss_col', loss_col.item(), loss_idx_value)
+            writer.add_scalar('loss/loss_exp', loss_exp.item(), loss_idx_value)
+            writer.add_scalar('loss/loss_ALL', loss.item(), loss_idx_value)
+            loss_idx_value += 1
 
-			loss_exp = 10*torch.mean(L_exp(enhanced_image,E))
+            optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm(DCE_net.parameters(), config.grad_clip_norm)
+            optimizer.step()
 
-			
-			# best_loss
-			loss =  Loss_TV + loss_spa + loss_col + loss_exp
+            log_gradients_in_model(DCE_net, writer, iteration)
 
+            if ((iteration + 1) % config.display_iter) == 0:
+                print("Loss at iteration", iteration + 1, "epoch", str(epoch), ":", loss.item())
 
-			
-			optimizer.zero_grad()
-			loss.backward()
-			torch.nn.utils.clip_grad_norm(DCE_net.parameters(),config.grad_clip_norm)
-			optimizer.step()
-
-			if ((iteration+1) % config.display_iter) == 0:
-				print("Loss at iteration", iteration+1, ":", loss.item())
-			if ((iteration+1) % config.snapshot_iter) == 0:
-				
-				torch.save(DCE_net.state_dict(), config.snapshots_folder + "Epoch" + str(epoch) + '.pth') 		
-
-
+            if ((iteration + 1) % config.snapshot_iter) == 0:
+                torch.save(DCE_net.state_dict(), config.snapshots_folder + "Epoch" + str(epoch) + '.pth')
 
 
 if __name__ == "__main__":
 
-	parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser()
 
-	# Input Parameters
-	parser.add_argument('--lowlight_images_path', type=str, default="data/train_data/")
-	parser.add_argument('--lr', type=float, default=0.0001)
-	parser.add_argument('--weight_decay', type=float, default=0.0001)
-	parser.add_argument('--grad_clip_norm', type=float, default=0.1)
-	parser.add_argument('--num_epochs', type=int, default=100)
-	parser.add_argument('--train_batch_size', type=int, default=8)
-	parser.add_argument('--val_batch_size', type=int, default=8)
-	parser.add_argument('--num_workers', type=int, default=4)
-	parser.add_argument('--display_iter', type=int, default=10)
-	parser.add_argument('--snapshot_iter', type=int, default=10)
-	parser.add_argument('--scale_factor', type=int, default=1)
-	parser.add_argument('--snapshots_folder', type=str, default="snapshots_Zero_DCE++/")
-	parser.add_argument('--load_pretrain', type=bool, default= False)
-	parser.add_argument('--pretrain_dir', type=str, default= "snapshots_Zero_DCE++/Epoch99.pth")
+    # Input Parameters
+    # parser.add_argument('--lowlight_images_path', type=str, default="data/train_data/")
+    parser.add_argument('--lowlight_images_path', type=str, default="data/small_100_train_data/")
+    parser.add_argument('--lr', type=float, default=0.0001)
+    parser.add_argument('--weight_decay', type=float, default=0.0001)
+    parser.add_argument('--grad_clip_norm', type=float, default=0.1)
+    parser.add_argument('--num_epochs', type=int, default=200)
+    parser.add_argument('--train_batch_size', type=int, default=8)
+    parser.add_argument('--val_batch_size', type=int, default=8)
+    parser.add_argument('--num_workers', type=int, default=16)
+    parser.add_argument('--display_iter', type=int, default=10)
+    parser.add_argument('--snapshot_iter', type=int, default=10)
+    parser.add_argument('--scale_factor', type=int, default=1)
+    parser.add_argument('--snapshots_folder', type=str, default="snapshots_Zero_DCE++/")
+    parser.add_argument('--load_pretrain', type=bool, default=False)
+    parser.add_argument('--pretrain_dir', type=str, default="snapshots_Zero_DCE++/Epoch99.pth")
 
-	config = parser.parse_args()
+    config = parser.parse_args()
 
-	if not os.path.exists(config.snapshots_folder):
-		os.mkdir(config.snapshots_folder)
+    if not os.path.exists(config.snapshots_folder):
+        os.mkdir(config.snapshots_folder)
 
-
-	train(config)
-
-
-
-
-
-
-
-
-	
+    train(config)
