@@ -30,8 +30,38 @@ def log_gradients_in_model(model, writer, step):
             writer.add_histogram(tag + "/grad", value.grad.cpu(), step)
 
 
+def cal_psnr(im1, im2):
+    im1_255 = im1 * 255
+    im2_255 = im2 * 255
+
+    mse = torch.mean((torch.abs(im1_255 - im2_255) ** 2))
+    psnr = 10 * torch.log10(255 * 255 / mse)
+    return psnr
+
+
+def cal_ssim(im1, im2):
+    assert len(im1.shape) == 2 and len(im2.shape) == 2
+    assert im1.shape == im2.shape
+    mu1 = torch.mean(im1)
+    mu2 = torch.mean(im2)
+    sigma1 = torch.sqrt(torch.mean((im1 - mu1) ** 2))
+    sigma2 = torch.sqrt(torch.mean((im2 - mu2) ** 2))
+    sigma12 = torch.mean(((im1 - mu1) * (im2 - mu2)))
+
+    k1, k2, L = 0.01, 0.03, 255
+    C1 = (k1 * L) ** 2
+    C2 = (k2 * L) ** 2
+    C3 = C2 / 2
+
+    l12 = (2 * mu1 * mu2 + C1) / (mu1 ** 2 + mu2 ** 2 + C1)
+    c12 = (2 * sigma1 * sigma2 + C2) / (sigma1 ** 2 + sigma2 ** 2 + C2)
+    s12 = (sigma12 + C3) / (sigma1 * sigma2 + C3)
+    ssim = l12 * c12 * s12
+    return ssim
+
+
 def train(config):
-    writer = SummaryWriter('./data/board/')
+    writer = SummaryWriter('./data/board/case_1600_100_5_0point1/')
 
     os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
     scale_factor = config.scale_factor
@@ -48,7 +78,6 @@ def train(config):
     L_color = Myloss.L_color()
     L_spa = Myloss.L_spa()
     L_exp = Myloss.L_exp(16)
-    # L_exp = Myloss.L_exp(16,0.6)
     L_TV = Myloss.L_TV()
 
     optimizer = torch.optim.Adam(DCE_net.parameters(), lr=config.lr, weight_decay=config.weight_decay)
@@ -56,6 +85,7 @@ def train(config):
     DCE_net.train()
     loss_idx_value = 0
     for epoch in range(config.num_epochs):
+        psns_mean = []
         for iteration, img_lowlight in enumerate(train_loader):
 
             img_lowlight = img_lowlight.cpu()
@@ -63,12 +93,21 @@ def train(config):
             E = 0.6
 
             enhanced_image, A = DCE_net(img_lowlight)
+
+            # Illumination Smoothness Loss
             Loss_TV = 1600 * L_TV(A)
-            # Loss_TV = 200*L_TV(A)
-            loss_spa = torch.mean(L_spa(enhanced_image, img_lowlight))
+
+            # Spatial Consistency Loss
+            loss_spa = 100 * torch.mean(L_spa(enhanced_image, img_lowlight))
+
+            # Color Constancy Loss
             loss_col = 5 * torch.mean(L_color(enhanced_image))
 
-            loss_exp = 10 * torch.mean(L_exp(enhanced_image, E))
+            # Exposure Control Loss
+            loss_exp = 0.1 * torch.mean(L_exp(enhanced_image, E))
+
+            psns_mean.append(cal_psnr(img_lowlight, enhanced_image).item())
+            # ssim = cal_ssim(img_lowlight, enhanced_image)
 
             # best_loss
             loss = Loss_TV + loss_spa + loss_col + loss_exp
@@ -92,6 +131,8 @@ def train(config):
             if ((iteration + 1) % config.snapshot_iter) == 0:
                 torch.save(DCE_net.state_dict(), config.snapshots_folder + "Epoch" + str(epoch) + '.pth')
 
+        writer.add_scalar('evaluation/psns', np.array(psns_mean).mean(), epoch)
+
 
 if __name__ == "__main__":
 
@@ -103,7 +144,7 @@ if __name__ == "__main__":
     parser.add_argument('--lr', type=float, default=0.0001)
     parser.add_argument('--weight_decay', type=float, default=0.0001)
     parser.add_argument('--grad_clip_norm', type=float, default=0.1)
-    parser.add_argument('--num_epochs', type=int, default=200)
+    parser.add_argument('--num_epochs', type=int, default=50)
     parser.add_argument('--train_batch_size', type=int, default=8)
     parser.add_argument('--val_batch_size', type=int, default=8)
     parser.add_argument('--num_workers', type=int, default=16)

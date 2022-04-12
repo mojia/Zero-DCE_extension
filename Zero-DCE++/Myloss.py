@@ -22,6 +22,8 @@ class L_color(nn.Module):
         Dgb = torch.pow(mb - mg, 2)
         k = torch.pow(torch.pow(Drg, 2) + torch.pow(Drb, 2) + torch.pow(Dgb, 2), 0.5)
 
+        # print('k ', k, 'k size', k.size())
+        # k = torch.from_numpy(k)
         return k
 
 
@@ -51,7 +53,7 @@ class L_spa(nn.Module):
 
         weight_diff = torch.max(
             torch.FloatTensor([1]).cpu() + 10000 * torch.min(org_pool - torch.FloatTensor([0.3]).cpu(),
-                                                              torch.FloatTensor([0]).cpu()),
+                                                             torch.FloatTensor([0]).cpu()),
             torch.FloatTensor([0.5]).cpu())
         E_1 = torch.mul(torch.sign(enhance_pool - torch.FloatTensor([0.5]).cpu()), enhance_pool - org_pool)
 

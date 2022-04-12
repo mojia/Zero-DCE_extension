@@ -92,5 +92,10 @@ If you have any questions, please contact Chongyi Li at lichongyi25@gmail.com or
 
 ## TensorBoard
 source venv/bin/activate
+
 python3 lowlight_train.py
+
 tensorboard --logdir=./data/board/ --port 8123
+
+tensorboard --logdir=./data/board/case_1600_10_5_1/ --port 8123
+ 
